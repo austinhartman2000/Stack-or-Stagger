@@ -15,9 +15,9 @@ my_data$Arch1 = factor(my_data$Arch1)
 my_data$Arch2 = factor(my_data$Arch2)
 
 #Eliminate rows with not enough minutes to qualify
-cutoff = 168 #Min number of minutes for each of the four lineups for a team to qualify
+cutoff = 192 #Min number of minutes for each of the four lineups for a team to qualify
 subset = my_data[my_data$ActM0 >= cutoff & my_data$ActM1 >= cutoff & my_data$ActM2 >= cutoff & my_data$ActM3 >= cutoff,]
-nrow(subset)
+nrow(subset)/nrow(my_data)
 
 #Estimate the minutes per game based on total minutes and minutes per game
 subset$GamesPlayed = (subset$ActM0 + subset$ActM1 + subset$ActM2 + subset$ActM3)/48
@@ -25,22 +25,17 @@ subset$ActM0_PerGame = subset$ActM0 / subset$GamesPlayed
 subset$ActM1_PerGame = subset$ActM1 / subset$GamesPlayed
 subset$ActM2_PerGame = subset$ActM2 / subset$GamesPlayed
 subset$ActM3_PerGame = subset$ActM3 / subset$GamesPlayed
+#Compute the minutes per game for each player and view a histogram of M0
 subset$ActSum = subset$ActM0_PerGame + subset$ActM1_PerGame + subset$ActM2_PerGame + subset$ActM3_PerGame
 subset$MPG1 = (subset$ActM1_PerGame + subset$ActM3_PerGame)
 subset$MPG2 = (subset$ActM2_PerGame + subset$ActM3_PerGame)
 hist(subset$ActM0_PerGame, prob = TRUE)
 
 
-# #Old density code that looked at raw M0 values instead of proportions
-# dx = density(subset$ActM0_PerGame, from = 0, to = 20)
-# dx2 = density(subset$ActM0_PerGame, adjust=2, from = 0, to = 20)
-# lines(dx)
-# lines(dx2, lty='dotted')
-
 #Function to find the max m0 possible based on minutes per game of both players
 get_max_m0 = function(row){
   my_min = min(48-as.numeric(row['MPG1']), 48-as.numeric(row['MPG2']))
-  return(my_min)
+  return(round(my_min,2))
 }
 
 #Find proportion of M0 values compared to theoretical max value computed with above function
@@ -48,11 +43,14 @@ subset$max_m0 = apply(subset, 1, get_max_m0)
 subset$ActM0_Prop = subset$ActM0_PerGame / subset$max_m0
 
 #Find the density of m0 proportions to use for prior later
-hist(subset$ActM0_Prop, prob = TRUE)
+hist(subset$ActM0_Prop, prob = TRUE, main = "Lambda = Density Distribution of M1*", xlab = "M1*")
 dx = density(subset$ActM0_Prop, from = 0, to = 20)
 dx2 = density(subset$ActM0_Prop, adjust=2, from = 0, to = 20)
 lines(dx)
 lines(dx2, lty="dotted")
+
+
+
 
 #Potentially explore less diverse clusters for larger sample sizes
 newArchs = function(row, num){
@@ -61,14 +59,17 @@ newArchs = function(row, num){
   }else{
     arch = row['Arch2']
   }
-  if (arch %in% c("Post Scorer", "Roll + Cut Big", "Versatile Big", "Stretch Big")){
-    return("Big")
+  if (arch %in% c("Post Scorer", "Versatile Big")){
+    return("On_Ball_Big")
+  }
+  else if (arch %in% c("Roll + Cut Big", "Stretch Big")){
+    return("Off_Ball_Big")
   }
   else if (arch %in% c("Off Screen Shooter", "Movement Shooter", "Stationary Shooter", "Athletic Finisher")){
     return("Off Ball")
   }
   else{
-    return("On Ball")
+    return("On Ball") #This was inititally on ball
   }
 }
 
@@ -106,12 +107,13 @@ my_function = function(par, row, dx){
 
 #Optimizes the above function
 get_optimal = function(row){
-  my_min = min(48-as.numeric(row['MPG1']), 48-as.numeric(row['MPG2']))
-  optim_output = optim(par = c(my_min/2), fn = my_function, dx = dx2, row = row, lower = c(0), upper = c(my_min), method="L-BFGS-B")
-  m0 = optim_output$par
-  m1 = 48 - as.numeric(row['MPG2']) - m0
-  m2 = 48 - as.numeric(row['MPG1']) - m0
-  m3 = as.numeric(row['MPG2']) + as.numeric(row['MPG1']) - 48 + m0
+  my_max = min(48-as.numeric(row['MPG1']), 48-as.numeric(row['MPG2']))
+  my_min = max(48 - as.numeric(row['MPG2']) - as.numeric(row['MPG1']), 0)
+  optim_output = optim(par = c(my_min/2), fn = my_function, dx = dx2, row = row, lower = c(my_min), upper = c(my_max), method="L-BFGS-B")
+  m0 = round(optim_output$par,2)
+  m1 = round(48 - as.numeric(row['MPG2']) - m0, 2)
+  m2 = round(48 - as.numeric(row['MPG1']) - m0,2)
+  m3 = round(as.numeric(row['MPG2']) + as.numeric(row['MPG1']) - 48 + m0,2)
   return(c(m0,m1,m2,m3))
 }
 
@@ -125,6 +127,48 @@ for(i in 1:nrow(subset)){
   subset[i,]$NewSugg3 = out[4]
 }
 
+#Optimizes the above function
+get_stack = function(row){
+  my_max = min(48-as.numeric(row['MPG1']), 48-as.numeric(row['MPG2']))
+  my_min = max(48 - as.numeric(row['MPG2']) - as.numeric(row['MPG1']), 0)
+  m0 = round(my_max,2)
+  m1 = round(48 - as.numeric(row['MPG2']) - m0, 2)
+  m2 = round(48 - as.numeric(row['MPG1']) - m0,2)
+  m3 = round(as.numeric(row['MPG2']) + as.numeric(row['MPG1']) - 48 + m0,2)
+  return(c(m0,m1,m2,m3))
+}
+
+#Get all the optimized suggestions for every row
+subset[c('StackSugg0', 'StackSugg1', 'StackSugg2', 'StackSugg3')] = 0
+for(i in 1:nrow(subset)){
+  out = get_stack(subset[i,])
+  subset[i,]$StackSugg0 = out[1]
+  subset[i,]$StackSugg1 = out[2]
+  subset[i,]$StackSugg2 = out[3]
+  subset[i,]$StackSugg3 = out[4]
+}
+
+#Optimizes the above function
+get_Stagger = function(row){
+  my_max = min(48-as.numeric(row['MPG1']), 48-as.numeric(row['MPG2']))
+  my_min = max(48 - as.numeric(row['MPG2']) - as.numeric(row['MPG1']), 0)
+  m0 = round(my_min,2)
+  m1 = round(48 - as.numeric(row['MPG2']) - m0, 2)
+  m2 = round(48 - as.numeric(row['MPG1']) - m0,2)
+  m3 = round(as.numeric(row['MPG2']) + as.numeric(row['MPG1']) - 48 + m0,2)
+  return(c(m0,m1,m2,m3))
+}
+
+#Get all the optimized suggestions for every row
+subset[c('StaggerSugg0', 'StaggerSugg1', 'StaggerSugg2', 'StaggerSugg3')] = 0
+for(i in 1:nrow(subset)){
+  out = get_Stagger(subset[i,])
+  subset[i,]$StaggerSugg0 = out[1]
+  subset[i,]$StaggerSugg1 = out[2]
+  subset[i,]$StaggerSugg2 = out[3]
+  subset[i,]$StaggerSugg3 = out[4]
+}
+
 #For comparisons, look at proportions for suggested m0s
 subset$suggM0_Prop = subset$NewSugg0/subset$max_m0
 
@@ -133,204 +177,128 @@ subset$DiffProp = subset$SuggProp - subset$ActualProp
 subset$FinalStack = subset$suggM0_Prop > 0.5
 subset$FinalCompStack = subset$DiffProp > 0
 
-#Testing - Nees to be updated for new values
+subset$RealGameScore = (subset$PM0*subset$ActM0_PerGame + subset$PM1*subset$ActM1_PerGame + subset$PM2*subset$ActM2_PerGame + subset$PM3*subset$ActM3_PerGame)/48
+
+subset$SuggGameScore = (subset$PM0*subset$SuggM0 + subset$PM1*subset$suggM1 + subset$PM2*subset$SuggM2 + subset$PM3*subset$SuggM3)/48
+subset$GameImprovement = subset$SuggGameScore - subset$RealGameScore
+t.test(subset$GameImprovement)
+
+subset$StackGameScore = (subset$PM0*subset$StackSugg0 + subset$PM1*subset$StackSugg1 + subset$PM2*subset$StackSugg2 + subset$PM3*subset$StackSugg3)/48
+subset$StackImprovement = subset$StackGameScore - subset$RealGameScore
+t.test(subset$StackImprovement)
+
+subset$StaggerGameScore = (subset$PM0*subset$StaggerSugg0 + subset$PM1*subset$StaggerSugg1 + subset$PM2*subset$StaggerSugg2 + subset$PM3*subset$StaggerSugg3)/48
+subset$StaggerImprovement = subset$StaggerGameScore - subset$RealGameScore
+t.test(subset$StaggerImprovement)
+
+
+
+
+
+
+
+#Testing
 t.test(subset$`Stack/Stagger`)
 
 t.test(subset$DiffProp)
 
 prop.test(nrow(subset[subset$Stack == TRUE,]), nrow(subset), p = 0.5, alternative = "two.sided")
 
-prop.test(nrow(subset[subset$FinalCompStack == TRUE,]), nrow(subset), p = 0.5, alternative = "two.sided")
-
-subset$Diff_M0_PerGame = -(subset$ActM0_PerGame - subset$NewSugg0)
-subset$Diff_M1_PerGame = -(subset$ActM1_PerGame - subset$NewSugg1)
-subset$Diff_M2_PerGame = -(subset$ActM2_PerGame - subset$NewSugg2)
-subset$Diff_M3_PerGame = -(subset$ActM3_PerGame - subset$NewSugg3)
-anova_df = stack(subset[c('Diff_M0_PerGame','Diff_M1_PerGame','Diff_M2_PerGame','Diff_M3_PerGame')])
-one.way = aov(values ~ ind, data = anova_df)
-summary(one.way)
-tukey.one.way<-TukeyHSD(one.way)
-tukey.one.way
-
-guard_subset = subset[subset$Arch1 == subset$Arch2,]
-guard_df = stack(guard_subset[c('Diff_M0_PerGame','Diff_M1_PerGame','Diff_M2_PerGame','Diff_M3_PerGame')])
-one.way = aov(values ~ ind, data = guard_df)
-summary(one.way)
-tukey.one.way<-TukeyHSD(one.way)
-tukey.one.way
-
-
 lm0 = lm(subset$`Stack/Stagger` ~ subset$PM0)
 summary(lm0)
-plot(subset$PM0, subset$`Stack/Stagger`)
+plot(subset$PM0, subset$`Stack/Stagger`, main = "", xlab = "N1", ylab = "alpha", cex.lab = 2)
 abline(lm0)
 
 lm1 = lm(subset$`Stack/Stagger` ~ subset$PM1)
 summary(lm1)
-plot(subset$PM1, subset$`Stack/Stagger`)
+plot(subset$PM1, subset$`Stack/Stagger`, main = "", xlab = "N2", ylab = "alpha", cex.lab = 2)
 abline(lm1)
 
 lm2 = lm(subset$`Stack/Stagger` ~ subset$PM2)
 summary(lm2)
-plot(subset$PM2, subset$`Stack/Stagger`)
+plot(subset$PM2, subset$`Stack/Stagger`, main = "", xlab = "N3", ylab = "alpha", cex.lab = 2)
 abline(lm2)
 
 lm3 = lm(subset$`Stack/Stagger` ~ subset$PM3)
 summary(lm3)
-plot(subset$PM3, subset$`Stack/Stagger`)
+plot(subset$PM3, subset$`Stack/Stagger`, main = "", xlab = "N4", ylab = "alpha", cex.lab = 2)
 abline(lm3)
 
-lm0 = lm(subset$SuggProp ~ subset$PM0)
-summary(lm0)
-plot(subset$PM0, subset$SuggProp)
-abline(lm0)
-
-lm1 = lm(subset$SuggProp ~ subset$PM1)
-summary(lm1)
-plot(subset$PM1, subset$SuggProp)
-abline(lm1)
-
-lm2 = lm(subset$SuggProp ~ subset$PM2)
-summary(lm2)
-plot(subset$PM2, subset$SuggProp)
-abline(lm2)
-
-lm3 = lm(subset$SuggProp ~ subset$PM3)
-summary(lm3)
-plot(subset$PM3, subset$SuggProp)
-abline(lm3)
-
-lm4 = lm(SuggProp ~ PM1 +PM2 + PM3 + PM0, data=subset)
-summary(lm4)
-plot(subset$SuggProp ~ predict(lm4,subset))
-abline(lm4)
-
-mean.PM.data <- subset %>%
-  group_by(Stack) %>%
-  summarise(
-    PM0 = mean(PM0),
-    PM1 = mean(PM1),
-    PM2 = mean(PM2),
-    PM3 = mean(PM3)
-  )
-
-arch1PMMeans <- subset %>%
-  group_by(Arch1) %>%
-  summarise(
-    PM1 = mean(PM1),
-    SuggProp = mean(SuggProp)
-  )
-
-arch2PMMeans <- subset %>%
-  group_by(Arch2) %>%
-  summarise(
-    PM2 = mean(PM2)
-  )
-
-my_plot = ggplot(subset, aes(x = Stack, y = PM0)) + geom_point(cex = 1.5, pch = 1.0,position = position_jitter(w = 0.1, h = 0))
-my_plot = my_plot + stat_summary(fun.data = 'mean_se', geom = 'errorbar', width = 0.2) +
-  stat_summary(fun.data = 'mean_se', geom = 'pointrange') +
-  geom_point(data=mean.PM.data, aes(x=Stack, y=PM0))
-my_plot
 
 
-my_plot = ggplot(subset, aes(x = Stack, y = PM1)) + geom_point(cex = 1.5, pch = 1.0,position = position_jitter(w = 0.1, h = 0))
-my_plot = my_plot + stat_summary(fun.data = 'mean_se', geom = 'errorbar', width = 0.2) +
-  stat_summary(fun.data = 'mean_se', geom = 'pointrange') +
-  geom_point(data=mean.PM.data, aes(x=Stack, y=PM1))
-my_plot
 
 
-my_plot = ggplot(subset, aes(x = Stack, y = PM2)) + geom_point(cex = 1.5, pch = 1.0,position = position_jitter(w = 0.1, h = 0))
-my_plot = my_plot + stat_summary(fun.data = 'mean_se', geom = 'errorbar', width = 0.2) +
-  stat_summary(fun.data = 'mean_se', geom = 'pointrange') +
-  geom_point(data=mean.PM.data, aes(x=Stack, y=PM2))
-my_plot
 
 
-my_plot = ggplot(subset, aes(x = Stack, y = PM3)) + geom_point(cex = 1.5, pch = 1.0,position = position_jitter(w = 0.1, h = 0))
-my_plot = my_plot + stat_summary(fun.data = 'mean_se', geom = 'errorbar', width = 0.2) +
-  stat_summary(fun.data = 'mean_se', geom = 'pointrange') +
-  geom_point(data=mean.PM.data, aes(x=Stack, y=PM3))
-my_plot
 
-my_plot = ggplot(subset, aes(x = Arch1, y = PM1)) + geom_point(cex = 1.5, pch = 1.0,position = position_jitter(w = 0.1, h = 0))
-my_plot = my_plot + stat_summary(fun.data = 'mean_se', geom = 'errorbar', width = 0.2) +
-  stat_summary(fun.data = 'mean_se', geom = 'pointrange') +
-  geom_point(data=arch1PMMeans, aes(x=Arch1, y=PM1))
-my_plot
 
-anova_arch1 = aov(PM1 ~ NewArch1, data = subset)
+
+
+
+write.csv(subset, "C:/Users/Austin Hartman/Documents/CS 497 Basketball Sim/basketball-reference-data/StackorStaggerAnovaData.csv")
+
+anova_arch1 = aov(PM2 ~ Arch2, data = subset)
 summary(anova_arch1)
 tukey.arch1<-TukeyHSD(anova_arch1)
 tukey.arch1
 
-my_plot = ggplot(subset, aes(x = Arch2, y = PM2)) + geom_point(cex = 1.5, pch = 1.0,position = position_jitter(w = 0.1, h = 0))
-my_plot = my_plot + stat_summary(fun.data = 'mean_se', geom = 'errorbar', width = 0.2) +
-  stat_summary(fun.data = 'mean_se', geom = 'pointrange') +
-  geom_point(data=arch2PMMeans, aes(x=Arch2, y=PM2))
-my_plot
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+anova_arch1 = aov(PM1 ~ Arch1, data = subset)
+summary(anova_arch1)
+tukey.arch1<-TukeyHSD(anova_arch1)
+tukey.arch1
 
 anova_arch2 = aov(`Stack/Stagger` ~ Double_Arch, data = subset)
 summary(anova_arch2)
 tukey.arch2<-TukeyHSD(anova_arch2)
 tukey.arch2
 
-anova_arch2 = aov(`Stack/Stagger` ~ NewDouble_Arch, data = subset)
+anova_arch2 = aov(SuggProp ~ Double_Arch, data = subset)
 summary(anova_arch2)
 tukey.arch2<-TukeyHSD(anova_arch2)
 tukey.arch2
 
-anova_mix = aov()
+table = tukey.arch2$Double_Arch
+table[order(table[, 'p adj']), ][1:20,]
 
-anova_arch2 = aov(PM2 ~ NewArch2, data = subset)
+anova_arch2 = aov(ActualProp ~ Double_Arch, data = subset)
 summary(anova_arch2)
 tukey.arch2<-TukeyHSD(anova_arch2)
 tukey.arch2
 
-anova_mix = aov(PM3 ~ Arch1 * Arch2, data = subset)
-summary(anova_mix)
-tukey.mix<-TukeyHSD(anova_mix)
-tukey.mix
-
-anova_mix = aov(ActualProp ~ Arch1 * Arch2, data = subset)
-summary(anova_mix)
-
-anova_mix = aov(SuggProp ~ Arch1 * Arch2, data = subset)
-summary(anova_mix)
-
-anova_mix = aov(DiffProp ~ Arch1 * Arch2, data = subset)
-summary(anova_mix)
-
-plot(PM1 ~ Lebron1, subset)
-plot(PM2 ~ Lebron2, subset)
-
-my_plot = ggplot(subset, aes(x = Arch1, y = SuggProp)) + geom_point(cex = 1.5, pch = 1.0,position = position_jitter(w = 0.1, h = 0))
-my_plot = my_plot + stat_summary(fun.data = 'mean_se', geom = 'errorbar', width = 0.2) +
-  stat_summary(fun.data = 'mean_se', geom = 'pointrange') +
-  geom_point(data=arch1PMMeans, aes(x=Arch1, y=SuggProp))
-my_plot
-
-library(aod)
+table = tukey.arch2$Double_Arch
+table[order(table[, 'p adj']), ][1:20,]
 
 
-View(subset[c('Arch1', 'Lebron1', 'Arch2', 'Lebron2', 'Stack')][with(subset, order(Arch1, Arch2)),])
 
-mylogit = glm(Stack ~ Lebron1 + Lebron2 + Lebron1:Arch1 + Lebron2:Arch2, data = subset, family = "binomial")
-with(mylogit, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+anova_arch1 = aov(PM2 ~ NewArch2, data = subset)
+summary(anova_arch1)
+tukey.arch1<-TukeyHSD(anova_arch1)
+tukey.arch1
+
+anova_arch1 = aov(PM1 ~ NewArch1, data = subset)
+summary(anova_arch1)
+tukey.arch1<-TukeyHSD(anova_arch1)
+tukey.arch1
+
+anova_arch3 = aov(`Stack/Stagger` ~ NewDouble_Arch, data = subset)
+summary(anova_arch3)
+tukey.arch3<-TukeyHSD(anova_arch3)
+tukey.arch3
+
+anova_arch3 = aov(SuggProp ~ NewDouble_Arch, data = subset)
+summary(anova_arch3)
+tukey.arch3<-TukeyHSD(anova_arch3)
+tukey.arch3
+
+table = tukey.arch3$NewDouble_Arch
+table[order(table[, 'p adj']), ]
+
+pairwise.t.test(subset$SuggProp, subset$NewDouble_Arch, p.adj = "bonf")
+
+anova_arch4 = aov(ActualProp ~ NewDouble_Arch, data = subset)
+summary(anova_arch4)
+tukey.arch4<-TukeyHSD(anova_arch4)
+tukey.arch4
+
+table = tukey.arch4$Double_Arch
+table[order(table[, 'p adj']), ][1:20,]
